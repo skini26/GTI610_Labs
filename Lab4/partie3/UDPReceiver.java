@@ -1,8 +1,12 @@
+package partie3;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -111,8 +115,6 @@ public class UDPReceiver extends Thread {
 		this.SERVER_DNS = server_dns;
 	}
 
-
-
 	public void setDNSFile(String filename) {
 		DNSFile = filename;
 	}
@@ -120,8 +122,8 @@ public class UDPReceiver extends Thread {
 	public void run() {
 		try {
 			DatagramSocket serveur = new DatagramSocket(this.port); // *Creation d'un socket UDP
+			List<String> lAdrRequete = new ArrayList<String>();
 		
-			
 			// *Boucle infinie de recpetion
 			while (!this.stop) {
 				byte[] buff = new byte[0xFF];
@@ -133,54 +135,151 @@ public class UDPReceiver extends Thread {
 				
 				System.out.println("paquet recu du  "+paquetRecu.getAddress()+"  du port: "+ paquetRecu.getPort());
 				
-
 				// *Creation d'un DataInputStream ou ByteArrayInputStream pour
 				// manipuler les bytes du paquet
 
 				ByteArrayInputStream TabInputStream = new ByteArrayInputStream (paquetRecu.getData());
+				DataInputStream dis = new DataInputStream(TabInputStream);
 				
 				System.out.println(buff.toString());
+
+				// Ignorer ID + etc
+				dis.skipBytes(7);
+				
+				// Lire ANCOUNT
+				int requete = dis.readByte(); // 8
 				
 				// ****** Dans le cas d'un paquet requete *****
-
+				if(requete == 0)
+				{
 					// *Lecture du Query Domain name, a partir du 13 byte
-
+					dis.skipBytes(4); // 12
+					int n = dis.readByte(); // 13
+					
+					StringBuilder qNameBuild = new StringBuilder();
+					while( n != 0 )
+					{
+						// Mettre un point chaque boucle
+						if(qNameBuild.length() > 0)
+							qNameBuild.append('.');
+						
+						// Composer
+						byte [] b = new byte[n];
+						dis.read(b);
+						qNameBuild.append(new String(b));
+						
+						// Prochain byte
+						n = dis.readByte();
+					} // while
+					
 					// *Sauvegarde du Query Domain name
+					DomainName = qNameBuild.toString();
 					
 					// *Sauvegarde de l'adresse, du port et de l'identifiant de la requete
-
+					setAdrIP(paquetRecu.getAddress().getHostAddress());
+					
 					// *Si le mode est redirection seulement
+					if(RedirectionSeulement)
+					{
 						// *Rediriger le paquet vers le serveur DNS
+						UDPSender send = new UDPSender(SERVER_DNS, port, serveur);
+						send.SendPacketNow(paquetRecu);
+					}
 					// *Sinon
+					else
+					{
 						// *Rechercher l'adresse IP associe au Query Domain name
 						// dans le fichier de correspondance de ce serveur					
-
+						QueryFinder qFinder = new QueryFinder(DNSFile, DomainName);
+						List<String> lAdr = qFinder.StartResearch(DomainName);
+						
 						// *Si la correspondance n'est pas trouvee
+						if(lAdr.isEmpty())
+						{
 							// *Rediriger le paquet vers le serveur DNS
+							UDPSender send = new UDPSender(SERVER_DNS, port, serveur);
+							send.SendPacketNow(paquetRecu);
+						}
 						// *Sinon	
+						else
+						{
 							// *Creer le paquet de reponse a l'aide du UDPAnswerPaquetCreator
+							byte [] reponse =
+									UDPAnswerPacketCreator.getInstance().CreateAnswerPacket(paquetRecu.getData(), lAdr);
+							
 							// *Placer ce paquet dans le socket
+							paquetRecu.setData(reponse);
+							
 							// *Envoyer le paquet
-				
+							serveur.send(paquetRecu);
+						}
+					}
+				}
 				// ****** Dans le cas d'un paquet reponse *****
-						// *Lecture du Query Domain name, a partir du 13 byte
+				else
+				{
+					// *Lecture du Query Domain name, a partir du 13 byte
+					dis.skipBytes(4); // 12
+					int qdn = dis.readByte(); // 13
+
+					StringBuilder qNameBuild = new StringBuilder();
+					while( qdn != 0 )
+					{
+						// Mettre un point chaque boucle
+						if(qNameBuild.length() > 0)
+							qNameBuild.append('.');
+
+						// Composer
+						byte [] b = new byte[qdn];
+						dis.read(b);
+						qNameBuild.append(new String(b));
 						
-						// *Passe par dessus Type et Class
-						
-						// *Passe par dessus les premiers champs du ressource record
-						// pour arriver au ressource data qui contient l'adresse IP associe
-						//  au hostname (dans le fond saut de 16 bytes)
-						
-						// *Capture de ou des adresse(s) IP (ANCOUNT est le nombre
-						// de r�ponses retourn�es)			
+						// Prochain byte
+						qdn = dis.readByte();
+					} // while
 					
+					// *Sauvegarde du Query Domain name
+					DomainName = qNameBuild.toString();
+					
+					// *Passe par dessus Type et Class
+					// *Passe par dessus les premiers champs du ressource record
+					// pour arriver au ressource data qui contient l'adresse IP associe
+					//  au hostname (dans le fond saut de 16 bytes)
+					dis.skip(16);
+					
+					// *Capture de ou des adresse(s) IP (ANCOUNT est le nombre
+					// de reponses retournees)
+					
+					for(int i = 0; i < requete; i++)
+					{
+						// Lire RDATA entre 0 a 255
+						String ip = (dis.readByte() & 0xff) + "." +
+									(dis.readByte() & 0xff) + "." +
+									(dis.readByte() & 0xff) + "." +
+									(dis.readByte() & 0xff);
+
+						setAdrIP(ip);
+						lAdrRequete.add(adrIP);
+
 						// *Ajouter la ou les correspondance(s) dans le fichier DNS
 						// si elles ne y sont pas deja
-						
-						// *Faire parvenir le paquet reponse au demandeur original,
-						// ayant emis une requete avec cet identifiant				
-						// *Placer ce paquet dans le socket
-						// *Envoyer le paquet
+						if(!RedirectionSeulement)
+						{
+							AnswerRecorder ar = new AnswerRecorder(DNSFile);
+							ar.StartRecord(DomainName, adrIP);
+						}
+					}
+					
+					// *Faire parvenir le paquet reponse au demandeur original,
+					// ayant emis une requete avec cet identifiant	
+					byte[] reponse = UDPAnswerPacketCreator.getInstance().CreateAnswerPacket(paquetRecu.getData(), lAdrRequete);
+					
+					// *Placer ce paquet dans le socket
+					paquetRecu.setData(reponse);
+					
+					// *Envoyer le paquet
+					serveur.send(paquetRecu);
+				}
 			}
 //			serveur.close(); //closing server
 		} catch (Exception e) {

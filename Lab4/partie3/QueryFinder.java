@@ -1,3 +1,4 @@
+package partie3;
 /******************************************************
  Laboratoire #3 : Programmation d'un serveur DNS
  
